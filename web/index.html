@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ESP32 GP2Y0A02 · Realtime Voltage Plotter</title>
+<link rel="stylesheet" href="/web/vendor/uPlot.min.css" />
+<script>
+  // set theme before first paint to avoid a flash
+  try {
+    var _t = localStorage.getItem("vplot-theme")
+          || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    document.documentElement.setAttribute("data-theme", _t);
+  } catch (e) { document.documentElement.setAttribute("data-theme", "dark"); }
+</script>
+<style>
+  :root, :root[data-theme="dark"]{
+    --bg:#0e1016; --panel:#151925; --panel-2:#1b2130; --line:#262c3d;
+    --fg:#e7e9ef; --muted:#8b93a7; --accent:#4f9dff; --accent-dim:#2b4c7e;
+    --green:#4ad991; --red:#ff5c6c; --amber:#ffb454;
+    --pill-on-border:#1f5138;
+    --chart-grid:#232838; --chart-fill:rgba(79,157,255,0.10);
+    --radius:10px;
+    color-scheme:dark;
+  }
+  :root[data-theme="light"]{
+    --bg:#f3f5f9; --panel:#ffffff; --panel-2:#eef1f6; --line:#d7dde8;
+    --fg:#1b2130; --muted:#5b6472; --accent:#2f7ae5; --accent-dim:#a8c8f4;
+    --green:#1f9d57; --red:#d93b47; --amber:#b06d0a;
+    --pill-on-border:#9bd8b6;
+    --chart-grid:#e3e7ef; --chart-fill:rgba(47,122,229,0.10);
+    color-scheme:light;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column;
+  }
+  .mono{font-family:ui-monospace,"Cascadia Code",Consolas,"Courier New",monospace}
+
+  header{
+    display:flex; align-items:center; gap:14px;
+    padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel);
+  }
+  header h1{font-size:14px; font-weight:600; margin:0; letter-spacing:.2px}
+  header .sub{color:var(--muted); font-size:12px}
+  .pill{
+    margin-left:auto; display:flex; align-items:center; gap:8px;
+    padding:5px 12px; border-radius:999px; background:var(--panel-2);
+    border:1px solid var(--line); font-size:12px; color:var(--muted);
+  }
+  .pill .dot{width:9px; height:9px; border-radius:50%; background:var(--muted)}
+  .pill.on{color:var(--green); border-color:var(--pill-on-border)}
+  #themeBtn{padding:6px 10px; font-size:15px; line-height:1}
+  .pill.on .dot{background:var(--green); box-shadow:0 0 10px var(--green)}
+
+  main{flex:1; display:grid; grid-template-columns:1fr 340px; min-height:0}
+  .left{display:flex; flex-direction:column; min-width:0; padding:14px; gap:12px}
+  .right{
+    border-left:1px solid var(--line); background:var(--panel);
+    padding:14px; overflow-y:auto; display:flex; flex-direction:column; gap:14px;
+  }
+
+  /* toolbar */
+  .toolbar{
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:var(--radius); padding:10px;
+  }
+  .group{display:flex; align-items:center; gap:8px; padding-right:8px}
+  .group + .group{border-left:1px solid var(--line); padding-left:12px}
+  label.k{color:var(--muted); font-size:12px}
+
+  select,input[type=number],input[type=text]{
+    background:var(--panel-2); color:var(--fg); border:1px solid var(--line);
+    border-radius:7px; padding:6px 8px; font-size:13px; outline:none;
+  }
+  input[type=number]{width:92px}
+  select:focus,input:focus{border-color:var(--accent)}
+
+  button{
+    background:var(--panel-2); color:var(--fg); border:1px solid var(--line);
+    border-radius:7px; padding:7px 12px; font-size:13px; cursor:pointer;
+    transition:background .12s,border-color .12s,color .12s; white-space:nowrap;
+  }
+  button:hover{border-color:var(--accent); color:#fff}
+  button:disabled{opacity:.45; cursor:not-allowed}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#08131f; font-weight:600}
+  button.primary:hover{background:#6fb0ff}
+  button.danger{background:var(--red); border-color:var(--red); color:#1a0a0c; font-weight:600}
+  button.icon{padding:7px 9px; font-size:14px; line-height:1}
+  button.sm{padding:5px 9px; font-size:12px}
+
+  /* chart */
+  .chart-wrap{
+    flex:1; min-height:0; background:var(--panel); border:1px solid var(--line);
+    border-radius:var(--radius); padding:10px 12px 6px; position:relative;
+  }
+  #chart{width:100%; height:100%}
+  .hint{color:var(--muted); font-size:11.5px; padding:2px 2px 0}
+
+  /* right rail cards */
+  .card{background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius); padding:14px}
+  .card h2{
+    margin:0 0 12px; font-size:12px; letter-spacing:.6px; text-transform:uppercase;
+    color:var(--muted); font-weight:600;
+  }
+  .card h2 .tag{float:right; text-transform:none; letter-spacing:0; color:var(--accent)}
+
+  .seg{display:flex; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:2px; gap:2px}
+  .seg button{flex:1; border:none; background:transparent; padding:6px 4px; font-size:12px; border-radius:6px}
+  .seg button:hover{color:#fff}
+  .seg button.active{background:var(--accent); color:#08131f; font-weight:600}
+
+  .field{display:grid; grid-template-columns:52px 1fr auto auto; align-items:center; gap:6px; margin-top:8px}
+  .field label{color:var(--muted); font-size:12px}
+  .field input{width:100%}
+  .axis-actions{display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:10px}
+  .axis-actions button{padding:6px 4px; font-size:12px}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px}
+  .disabled{opacity:.4; pointer-events:none}
+
+  /* stats */
+  .readout{display:flex; align-items:baseline; gap:8px}
+  .readout .big{font-size:34px; font-weight:700; color:var(--green)}
+  .readout .unit{font-size:14px; color:var(--muted)}
+  .stat{display:flex; justify-content:space-between; padding:5px 0; border-top:1px solid var(--line); font-size:13px}
+  .stat:first-of-type{border-top:none}
+  .stat .v{color:var(--fg)}
+  .msg{font-size:12px; color:var(--muted); min-height:16px; margin-top:8px}
+  .msg.err{color:var(--red)}
+  .mono-box{
+    margin:10px 0 0; padding:8px; background:var(--bg); border:1px solid var(--line);
+    border-radius:7px; height:120px; overflow:auto; font-size:11px; line-height:1.5;
+    color:var(--muted); white-space:pre-wrap; word-break:break-all;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ESP32 · GP2Y0A02YK0F</h1>
+  <span class="sub">Realtime Voltage Plotter</span>
+  <div class="pill" id="statusPill"><span class="dot"></span><span id="statusText">Disconnected</span></div>
+  <button id="themeBtn" title="Toggle light / dark">&#9788;</button>
+</header>
+
+<main>
+  <div class="left">
+    <div class="toolbar">
+      <div class="group">
+        <label class="k">Port</label>
+        <select id="portSel" style="min-width:150px"></select>
+        <button class="icon" id="refreshBtn" title="Rescan ports">&#8635;</button>
+      </div>
+      <div class="group">
+        <label class="k">Baud</label>
+        <select id="baudSel">
+          <option>9600</option><option>19200</option><option>38400</option>
+          <option>57600</option><option selected>115200</option><option>230400</option>
+        </select>
+        <button class="primary" id="connectBtn">Connect</button>
+      </div>
+      <div class="group">
+        <button id="pauseBtn">Pause</button>
+        <button id="clearBtn">Clear</button>
+      </div>
+      <div class="group">
+        <button id="csvBtn">Export CSV</button>
+        <button id="pngBtn">Save PNG</button>
+      </div>
+    </div>
+
+    <div class="chart-wrap"><div id="chart"></div></div>
+    <div class="hint">Drag on the chart to box-zoom (X&nbsp;+&nbsp;Y) &middot; double-click to reset &middot; use the Axis panels on the right for precise scaling.</div>
+  </div>
+
+  <div class="right">
+    <!-- LIVE VALUES -->
+    <div class="card">
+      <h2>Live</h2>
+      <div class="readout">
+        <span class="big" id="vNow">--</span><span class="unit">V</span>
+      </div>
+      <div style="margin-top:10px">
+        <div class="stat"><span>ADC (raw)</span><span class="v mono" id="adcNow">--</span></div>
+        <div class="stat"><span>Min / Max</span><span class="v mono" id="minmax">--</span></div>
+        <div class="stat"><span>Average</span><span class="v mono" id="avg">--</span></div>
+        <div class="stat"><span>Sample rate</span><span class="v mono" id="rate">--</span></div>
+        <div class="stat"><span>Samples</span><span class="v mono" id="count">0</span></div>
+      </div>
+      <div class="msg" id="msg"></div>
+    </div>
+
+    <!-- X AXIS -->
+    <div class="card">
+      <h2>X Axis · Time <span class="tag" id="xTag">follow</span></h2>
+      <div class="seg" id="xModeSeg">
+        <button data-v="follow" class="active">Follow</button>
+        <button data-v="manual">Manual</button>
+        <button data-v="full">Full</button>
+      </div>
+
+      <div id="xFollowBox" class="field" style="grid-template-columns:auto 1fr auto">
+        <label>Window</label>
+        <input type="number" id="xWindow" value="30" min="1" step="1" />
+        <span class="k">seconds</span>
+      </div>
+
+      <div id="xManualBox">
+        <div class="field">
+          <label>X min</label>
+          <input type="number" id="xMin" step="1" />
+          <button class="sm" data-nudge="xMin:-1">&minus;</button>
+          <button class="sm" data-nudge="xMin:1">+</button>
+        </div>
+        <div class="field">
+          <label>X max</label>
+          <input type="number" id="xMax" step="1" />
+          <button class="sm" data-nudge="xMax:-1">&minus;</button>
+          <button class="sm" data-nudge="xMax:1">+</button>
+        </div>
+        <div class="axis-actions">
+          <button data-ax="x" data-act="panL">&#9664; Pan</button>
+          <button data-ax="x" data-act="zoomOut">Zoom &minus;</button>
+          <button data-ax="x" data-act="zoomIn">Zoom +</button>
+          <button data-ax="x" data-act="panR">Pan &#9654;</button>
+        </div>
+        <div class="row2">
+          <button data-ax="x" data-act="fit">Fit data</button>
+          <button data-ax="x" data-act="toFollow">Back to Follow</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Y AXIS -->
+    <div class="card">
+      <h2>Y Axis · Voltage <span class="tag" id="yTag">auto</span></h2>
+      <div class="seg" id="yModeSeg">
+        <button data-v="auto" class="active">Auto</button>
+        <button data-v="manual">Manual</button>
+      </div>
+
+      <div id="yManualBox">
+        <div class="field">
+          <label>Y min</label>
+          <input type="number" id="yMin" step="0.1" value="0" />
+          <button class="sm" data-nudge="yMin:-0.1">&minus;</button>
+          <button class="sm" data-nudge="yMin:0.1">+</button>
+        </div>
+        <div class="field">
+          <label>Y max</label>
+          <input type="number" id="yMax" step="0.1" value="3.3" />
+          <button class="sm" data-nudge="yMax:-0.1">&minus;</button>
+          <button class="sm" data-nudge="yMax:0.1">+</button>
+        </div>
+        <div class="axis-actions">
+          <button data-ax="y" data-act="panL">&#9660; Pan</button>
+          <button data-ax="y" data-act="zoomOut">Zoom &minus;</button>
+          <button data-ax="y" data-act="zoomIn">Zoom +</button>
+          <button data-ax="y" data-act="panR">Pan &#9650;</button>
+        </div>
+        <div class="row2">
+          <button data-ax="y" data-act="fit">Fit data</button>
+          <button data-ax="y" data-act="toAuto">Back to Auto</button>
+        </div>
+        <div class="row2">
+          <button data-preset="0,3.3">0 – 3.3 V</button>
+          <button data-preset="0,5">0 – 5 V</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SERIAL MONITOR / DEBUG -->
+    <div class="card">
+      <h2>Serial Monitor <span class="tag" id="sseTag">connecting…</span></h2>
+      <div class="stat"><span>Lines received</span><span class="v mono" id="linesSeen">0</span></div>
+      <div class="stat"><span>Parsed samples</span><span class="v mono" id="samplesSeen">0</span></div>
+      <pre class="mono-box" id="monBox">waiting…</pre>
+    </div>
+  </div>
+</main>
+
+<script src="/web/vendor/uPlot.iife.min.js"></script>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- state
+const MAXPTS = 120000;
+let data = [[], []];                 // [ elapsedSeconds[], voltage[] ]
+let records = [];                    // { t, adc, v, ts }  (for CSV export)
+let t0 = null;                       // first sample server timestamp
+let last = null;                     // last sample object
+let paused = false;
+let connected = false;
+
+let xMode = "follow";                // follow | manual | full
+let yMode = "auto";                  // auto | manual
+
+// ---------------------------------------------------------------- elements
+const $ = (id) => document.getElementById(id);
+const portSel = $("portSel"), baudSel = $("baudSel");
+const connectBtn = $("connectBtn"), pauseBtn = $("pauseBtn");
+const statusPill = $("statusPill"), statusText = $("statusText"), msgEl = $("msg");
+const xWindow = $("xWindow"), xMin = $("xMin"), xMax = $("xMax");
+const yMin = $("yMin"), yMax = $("yMax");
+const xTag = $("xTag"), yTag = $("yTag");
+const xFollowBox = $("xFollowBox"), xManualBox = $("xManualBox"), yManualBox = $("yManualBox");
+
+// ---------------------------------------------------------------- uPlot
+let u, chartRO;
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function makeChart(){
+  const el = $("chart");
+  const axStroke = cssVar("--muted"), gridStroke = cssVar("--chart-grid");
+  const AX = { stroke:axStroke, grid:{stroke:gridStroke,width:1}, ticks:{stroke:gridStroke,width:1} };
+  const opts = {
+    width: el.clientWidth || 800,
+    height: el.clientHeight || 400,
+    // range() is a pass-through: whatever we set via u.setScale() stays put.
+    scales: {
+      x:{ time:false, auto:false, range:(u,mn,mx)=> [mn ?? 0, mx ?? 30] },
+      y:{           auto:false, range:(u,mn,mx)=> [mn ?? 0, mx ?? 3.3] },
+    },
+    legend: { show:false },
+    cursor: {
+      drag:{ x:false, y:false },                 // we do our own pan / wheel-zoom
+      points:{ size:6 },
+      bind:{ dblclick:()=>null },                // we handle dbl-click ourselves
+    },
+    series: [
+      {},
+      { label:"Voltage", stroke:cssVar("--accent"), width:1.6,
+        fill:cssVar("--chart-fill"), points:{ show:false } },
+    ],
+    axes: [
+      Object.assign({}, AX, { values:(u,v)=>v.map(x=> x.toFixed(x>=100?0:1)+"s") }),
+      Object.assign({}, AX, { size:58, values:(u,v)=>v.map(x=> x.toFixed(2)) }),
+    ],
+  };
+  u = new uPlot(opts, data, el);
+
+  if (chartRO) chartRO.disconnect();
+  chartRO = new ResizeObserver(() => {
+    u.setSize({ width: el.clientWidth, height: el.clientHeight });
+  });
+  chartRO.observe(el);
+
+  installChartGestures();
+}
+
+// rebuild the chart so new theme colours take effect (data is kept in `data`)
+function rebuildChart(){
+  if (!u) return;
+  try { u.destroy(); } catch {}
+  makeChart();
+  applyScales();
+}
+
+// ---------------------------------------------------------------- chart gestures
+// wheel  -> zoom X toward the cursor       drag -> pan X along time
+// releasing at the live edge -> resume Follow;  dbl-click -> Follow + Auto Y
+const WHEEL_STEP = 0.82;
+
+function xNow(){ return [u.scales.x.min, u.scales.x.max]; }
+function latestX(){ const xs = data[0]; return xs.length ? xs[xs.length - 1] : null; }
+
+// apply an X range that came from a mouse gesture
+function gestureSetX(mn, mx){
+  if (!(mx > mn)) return;
+  const lx = latestX();
+  const atLive = lx != null && mx >= lx - (mx - mn) * 0.03;
+  if (atLive){
+    setXMode("follow");
+    xWindow.value = round(Math.max(0.5, mx - mn), 2);
+  } else {
+    setXMode("manual");
+    xMin.value = round(mn, 3);
+    xMax.value = round(mx, 3);
+  }
+  applyScales();
+}
+
+function installChartGestures(){
+  const ov = u.over;
+  ov.style.cursor = "grab";
+
+  ov.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = ov.getBoundingClientRect();
+    const xv = u.posToVal(e.clientX - rect.left, "x");
+    const [mn, mx] = xNow();
+    if (!isFinite(xv) || !isFinite(mn) || !isFinite(mx)) return;
+    const f = e.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP;   // wheel up = zoom in
+    gestureSetX(xv - (xv - mn) * f, xv + (mx - xv) * f);
+  }, { passive:false });
+
+  let pan = null;
+  ov.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    const [mn, mx] = xNow();
+    pan = { x0:e.clientX, w:ov.getBoundingClientRect().width, mn, mx, moved:false };
+    ov.style.cursor = "grabbing";
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!pan) return;
+    const dPx = e.clientX - pan.x0;
+    if (Math.abs(dPx) > 2) pan.moved = true;
+    const perPx = (pan.mx - pan.mn) / pan.w;
+    gestureSetX(pan.mn - dPx * perPx, pan.mx - dPx * perPx);
+  });
+  window.addEventListener("mouseup", () => {
+    if (pan){ pan = null; ov.style.cursor = "grab"; }
+  });
+
+  ov.addEventListener("dblclick", () => { setXMode("follow"); setYMode("auto"); });
+}
+
+// ---------------------------------------------------------------- helpers
+function round(x, d){ const p = 10**d; return Math.round(x*p)/p; }
+function num(el){ const v = parseFloat(el.value); return isFinite(v) ? v : NaN; }
+function fmtTs(){
+  const d = new Date();
+  const p = (n)=> String(n).padStart(2,"0");
+  return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());
+}
+// visible Y extent over an x-range (scan from the end, data is time-ordered)
+function yExtent(xLo, xHi){
+  const xs = data[0], ys = data[1];
+  let lo = Infinity, hi = -Infinity;
+  for (let i = xs.length - 1; i >= 0; i--){
+    const x = xs[i];
+    if (x > xHi) continue;
+    if (x < xLo) break;
+    const y = ys[i];
+    if (y < lo) lo = y;
+    if (y > hi) hi = y;
+  }
+  if (lo === Infinity) return null;
+  return [lo, hi];
+}
+
+// ---------------------------------------------------------------- axis modes
+function setXMode(m){
+  xMode = m;
+  xTag.textContent = m;
+  [...$("xModeSeg").children].forEach(b => b.classList.toggle("active", b.dataset.v === m));
+  xFollowBox.classList.toggle("disabled", m !== "follow");
+  xManualBox.classList.toggle("disabled", m !== "manual");
+}
+function setYMode(m){
+  yMode = m;
+  yTag.textContent = m;
+  [...$("yModeSeg").children].forEach(b => b.classList.toggle("active", b.dataset.v === m));
+  yManualBox.classList.toggle("disabled", m !== "manual");
+}
+
+// seed manual inputs from the current view before entering manual mode
+function seedManual(axis){
+  if (axis === "x"){
+    if (!isFinite(num(xMin)) || !isFinite(num(xMax)) || num(xMax) <= num(xMin)){
+      xMin.value = round(u.scales.x.min ?? 0, 3);
+      xMax.value = round(u.scales.x.max ?? 1, 3);
+    }
+  } else {
+    if (!isFinite(num(yMin)) || !isFinite(num(yMax)) || num(yMax) <= num(yMin)){
+      yMin.value = round(u.scales.y.min ?? 0, 3);
+      yMax.value = round(u.scales.y.max ?? 1, 3);
+    }
+  }
+}
+function toManual(axis){
+  seedManual(axis);
+  axis === "x" ? setXMode("manual") : setYMode("manual");
+}
+function readManual(axis){
+  return axis === "x" ? [num(xMin), num(xMax)] : [num(yMin), num(yMax)];
+}
+function writeManual(axis, lo, hi){
+  if (axis === "x"){ xMin.value = round(lo,3); xMax.value = round(hi,3); }
+  else            { yMin.value = round(lo,3); yMax.value = round(hi,3); }
+}
+
+function zoomAxis(axis, factor){        // factor < 1 => zoom in
+  toManual(axis);
+  let [lo, hi] = readManual(axis);
+  if (!isFinite(lo) || !isFinite(hi)) return;
+  const c = (lo + hi) / 2, h = (hi - lo) / 2 * factor;
+  writeManual(axis, c - h, c + h);
+}
+function panAxis(axis, frac){           // frac of the range, +/-
+  toManual(axis);
+  let [lo, hi] = readManual(axis);
+  if (!isFinite(lo) || !isFinite(hi)) return;
+  const d = (hi - lo) * frac;
+  writeManual(axis, lo + d, hi + d);
+}
+function fitAxis(axis){
+  toManual(axis);
+  if (axis === "x"){
+    const xs = data[0];
+    if (!xs.length) return;
+    writeManual("x", xs[0], Math.max(xs[xs.length-1], xs[0] + 1));
+  } else {
+    const lo = isFinite(num(xMin)) ? num(xMin) : (u.scales.x.min ?? 0);
+    const hi = isFinite(num(xMax)) ? num(xMax) : (u.scales.x.max ?? 1);
+    const ext = yExtent(lo, hi) || yExtent(-Infinity, Infinity);
+    if (!ext) return;
+    const pad = Math.max(0.02, (ext[1] - ext[0]) * 0.1);
+    writeManual("y", ext[0] - pad, ext[1] + pad);
+  }
+}
+
+// ---------------------------------------------------------------- render loop
+function applyScales(){
+  const xs = data[0];
+  const n = xs.length;
+
+  // ---- X ----
+  let xLo, xHi;
+  if (xMode === "follow"){
+    const w = Math.max(0.5, num(xWindow) || 30);
+    xHi = n ? xs[n-1] : w;
+    xLo = xHi - w;
+  } else if (xMode === "full"){
+    xLo = n ? xs[0] : 0;
+    xHi = n ? xs[n-1] : 1;
+    if (xHi <= xLo) xHi = xLo + 1;
+  } else { // manual
+    xLo = num(xMin); xHi = num(xMax);
+    if (!isFinite(xLo) || !isFinite(xHi) || xHi <= xLo) { xLo = u.scales.x.min; xHi = u.scales.x.max; }
+  }
+  if (isFinite(xLo) && isFinite(xHi)){
+    u.setScale("x", { min:xLo, max:xHi });
+  }
+
+  // ---- Y ----
+  let yLo, yHi;
+  if (yMode === "auto"){
+    const ext = yExtent(xLo, xHi) || yExtent(-Infinity, Infinity);
+    if (ext){
+      const pad = Math.max(0.02, (ext[1] - ext[0]) * 0.12);
+      yLo = ext[0] - pad; yHi = ext[1] + pad;
+    }
+  } else {
+    yLo = num(yMin); yHi = num(yMax);
+    if (!isFinite(yLo) || !isFinite(yHi) || yHi <= yLo) { yLo = u.scales.y.min; yHi = u.scales.y.max; }
+  }
+  if (isFinite(yLo) && isFinite(yHi)){
+    u.setScale("y", { min:yLo, max:yHi });
+  }
+}
+
+function tick(){
+  if (!paused && u) u.setData(data, false);   // keep our managed scales
+  if (u) applyScales();
+  updateStats();
+}
+setInterval(tick, 60);
+
+// ---------------------------------------------------------------- stats
+function updateStats(){
+  const ys = data[1];
+  if (last){
+    $("vNow").textContent  = last.v.toFixed(3);
+    $("adcNow").textContent = last.adc;
+  }
+  if (ys.length){
+    let lo = Infinity, hi = -Infinity, sum = 0;
+    for (let i = 0; i < ys.length; i++){ const y = ys[i]; if (y<lo) lo=y; if (y>hi) hi=y; sum += y; }
+    $("minmax").textContent = lo.toFixed(3) + " / " + hi.toFixed(3) + " V";
+    $("avg").textContent    = (sum / ys.length).toFixed(3) + " V";
+  }
+  $("count").textContent = records.length;
+  const xs = data[0];
+  if (xs.length > 5){
+    const span = xs[xs.length-1] - xs[0];
+    if (span > 0) $("rate").textContent = ((xs.length - 1) / span).toFixed(1) + " Hz";
+  }
+}
+
+// ---------------------------------------------------------------- SSE
+function setMsg(text, isErr){
+  msgEl.textContent = text || "";
+  msgEl.classList.toggle("err", !!isErr);
+}
+function monLog(line){
+  const box = $("monBox");
+  if (box.textContent === "waiting…") box.textContent = "";
+  box.textContent += line + "\n";
+  const lines = box.textContent.split("\n");
+  if (lines.length > 200) box.textContent = lines.slice(-200).join("\n");
+  box.scrollTop = box.scrollHeight;
+}
+
+function startStream(){
+  const es = new EventSource("/api/stream");
+  es.onopen = () => { $("sseTag").textContent = "live"; };
+  es.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+
+    if (m.type === "status"){
+      setConnected(m.connected, m.port, m.baud);
+      if (typeof m.lines_seen === "number") $("linesSeen").textContent = m.lines_seen;
+      if (typeof m.samples === "number") $("samplesSeen").textContent = m.samples;
+      if (m.last_error) setMsg(m.last_error, true);
+    }
+    else if (m.type === "error"){ setMsg(m.msg, true); monLog("[error] " + m.msg); }
+    else if (m.type === "info"){ setMsg(m.msg, false); monLog("[info] " + m.msg); }
+    else if (m.type === "raw"){
+      monLog(m.line);
+      $("linesSeen").textContent = (parseInt($("linesSeen").textContent) || 0) + 1;
+    }
+    else if (m.type === "sample"){
+      if (t0 == null) t0 = m.ts;
+      const x = m.ts - t0;
+      data[0].push(x); data[1].push(m.v);
+      if (data[0].length > MAXPTS){ data[0].splice(0, data[0].length - MAXPTS); data[1].splice(0, data[1].length - MAXPTS); }
+      records.push({ t:m.t, adc:m.adc, v:m.v, ts:m.ts });
+      if (records.length > 600000) records.splice(0, records.length - 600000);
+      $("samplesSeen").textContent = records.length;
+      last = m;
+    }
+  };
+  es.onerror = () => { $("sseTag").textContent = "reconnecting…"; setMsg("Stream disconnected, retrying…", true); };
+}
+
+function setConnected(on, port, baud){
+  connected = on;
+  statusPill.classList.toggle("on", on);
+  statusText.textContent = on ? `Connected · ${port} @ ${baud}` : "Disconnected";
+  connectBtn.textContent = on ? "Disconnect" : "Connect";
+  connectBtn.classList.toggle("primary", !on);
+  connectBtn.classList.toggle("danger", on);
+  portSel.disabled = on; baudSel.disabled = on;
+}
+
+// ---------------------------------------------------------------- API
+async function loadPorts(){
+  try{
+    const r = await fetch("/api/ports");
+    const j = await r.json();
+    portSel.innerHTML = "";
+    if (!j.ports.length){
+      portSel.innerHTML = '<option value="">no ports found</option>';
+      return;
+    }
+    for (const p of j.ports){
+      const o = document.createElement("option");
+      o.value = p.device;
+      o.textContent = p.desc && p.desc !== "n/a" ? `${p.device} — ${p.desc}` : p.device;
+      portSel.appendChild(o);
+    }
+  }catch(e){ setMsg("Cannot list ports: " + e, true); }
+}
+
+async function toggleConnect(){
+  if (connected){
+    await fetch("/api/disconnect", { method:"POST" });
+    return;
+  }
+  const port = portSel.value;
+  if (!port){ setMsg("Select a serial port first.", true); return; }
+  setMsg("Opening " + port + " …", false);
+  $("monBox").textContent = "waiting…";
+  try{
+    const r = await fetch("/api/connect", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ port, baud: parseInt(baudSel.value, 10) }),
+    });
+    const j = await r.json();
+    if (!j.ok) setMsg("Connect failed: " + (j.error || "unknown error"), true);
+  }catch(e){ setMsg("Connect request failed: " + e, true); }
+}
+
+// ---------------------------------------------------------------- CSV / PNG
+function exportCsv(){
+  if (!records.length){ setMsg("No data to export.", true); return; }
+  let s = "esp_ms,adc,voltage_V,host_epoch_s\n";
+  for (const r of records) s += `${r.t},${r.adc},${r.v},${r.ts.toFixed(3)}\n`;
+  downloadBlob(new Blob([s], { type:"text/csv" }), `voltage_${fmtTs()}.csv`);
+  setMsg(`Exported ${records.length} samples.`, false);
+}
+function savePng(){
+  const src = u.root.querySelector("canvas");
+  if (!src) return;
+  const c = document.createElement("canvas");
+  c.width = src.width; c.height = src.height;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = getComputedStyle(document.body).backgroundColor || "#0e1016";
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(src, 0, 0);
+  c.toBlob(b => downloadBlob(b, `voltage_${fmtTs()}.png`));
+}
+function downloadBlob(blob, name){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+// ---------------------------------------------------------------- wiring
+$("refreshBtn").onclick = loadPorts;
+connectBtn.onclick = toggleConnect;
+$("clearBtn").onclick = () => {
+  data[0].length = 0; data[1].length = 0; records.length = 0; t0 = null; last = null;
+  u.setData(data, false); setMsg("Cleared.", false);
+};
+pauseBtn.onclick = () => {
+  paused = !paused;
+  pauseBtn.textContent = paused ? "Resume" : "Pause";
+  setMsg(paused ? "Chart paused (still buffering)." : "", false);
+};
+$("csvBtn").onclick = exportCsv;
+$("pngBtn").onclick = savePng;
+
+$("xModeSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.v === "manual") seedManual("x");
+  setXMode(b.dataset.v);
+});
+$("yModeSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.v === "manual") seedManual("y");
+  setYMode(b.dataset.v);
+});
+
+// axis action buttons (zoom / pan / fit / back)
+document.querySelectorAll("[data-act]").forEach(btn => {
+  btn.onclick = () => {
+    const ax = btn.dataset.ax, act = btn.dataset.act;
+    if (act === "zoomIn")  zoomAxis(ax, 0.7);
+    else if (act === "zoomOut") zoomAxis(ax, 1.42);
+    else if (act === "panL") panAxis(ax, ax === "x" ? -0.25 : -0.25);
+    else if (act === "panR") panAxis(ax, ax === "x" ?  0.25 :  0.25);
+    else if (act === "fit") fitAxis(ax);
+    else if (act === "toFollow") setXMode("follow");
+    else if (act === "toAuto") setYMode("auto");
+  };
+});
+
+// +/- nudge buttons on the min/max fields
+document.querySelectorAll("[data-nudge]").forEach(btn => {
+  btn.onclick = () => {
+    const [id, delta] = btn.dataset.nudge.split(":");
+    const el = $(id);
+    toManual(id[0] === "x" ? "x" : "y");
+    const cur = num(el);
+    el.value = round((isFinite(cur) ? cur : 0) + parseFloat(delta), 3);
+  };
+});
+
+// Y presets
+document.querySelectorAll("[data-preset]").forEach(btn => {
+  btn.onclick = () => {
+    const [lo, hi] = btn.dataset.preset.split(",").map(Number);
+    setYMode("manual");
+    yMin.value = lo; yMax.value = hi;
+  };
+});
+
+// typing in a manual field implies manual mode
+[xMin, xMax].forEach(el => el.addEventListener("input", () => { if (xMode !== "manual") setXMode("manual"); }));
+[yMin, yMax].forEach(el => el.addEventListener("input", () => { if (yMode !== "manual") setYMode("manual"); }));
+
+// ---------------------------------------------------------------- theme
+const THEME_KEY = "vplot-theme";
+function setTheme(t){
+  document.documentElement.setAttribute("data-theme", t);
+  $("themeBtn").innerHTML = t === "light" ? "&#9790;" : "&#9788;";  // moon / sun
+  $("themeBtn").title = t === "light" ? "Switch to dark mode" : "Switch to light mode";
+  try { localStorage.setItem(THEME_KEY, t); } catch {}
+  rebuildChart();
+}
+$("themeBtn").onclick = () => {
+  const cur = document.documentElement.getAttribute("data-theme") || "dark";
+  setTheme(cur === "light" ? "dark" : "light");
+};
+
+let theme0 = "dark";
+try {
+  theme0 = localStorage.getItem(THEME_KEY)
+        || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+} catch {}
+document.documentElement.setAttribute("data-theme", theme0);
+$("themeBtn").innerHTML = theme0 === "light" ? "&#9790;" : "&#9788;";
+
+// ---------------------------------------------------------------- boot
+makeChart();
+setXMode("follow");
+setYMode("auto");
+tick();
+loadPorts();
+startStream();
+</script>
+</body>
+</html>
